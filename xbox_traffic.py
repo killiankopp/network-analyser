@@ -13,6 +13,8 @@ DEBUG = True
 
 network_bytes = Gauge("bytes_last_minute", "Network usage over last minute", ["ip"])
 
+IP_RE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
+
 def capture_traffic():
     capture_filter = " or ".join(f"host {ip}" for ip in IPS)
     cmd = [
@@ -53,15 +55,32 @@ def capture_traffic():
             if len(raw_preview) < 10:
                 raw_preview.append(raw)
 
-            # Normalize: if tshark emitted backslashes as separators, convert them to tabs
-            normalized = raw.replace('\\', '\t')
-            if DEBUG and '\\' in raw and total_lines <= 20:
-                print(f"[{datetime.now().isoformat()}] Replaced backslashes in line {total_lines}: '{raw}' -> '{normalized}'", flush=True)
+            # Split on backslash, tab or other whitespace (robust to weird separators)
+            parts = [p for p in re.split(r"[\\\t\s]+", raw) if p]
+            if DEBUG and total_lines <= 20:
+                print(f"[{datetime.now().isoformat()}] Raw line {total_lines}: '{raw}' -> parts={parts}", flush=True)
 
-            # First try split on tabs (normalized), otherwise split on whitespace
-            parts = normalized.split('\t')
+            heuristic_used = False
+            # If we don't have three fields, try a few heuristics to recover
             if len(parts) < 3:
-                parts = [p for p in re.split(r"[\t\s]+", normalized) if p]
+                # Case: second part could be "<ip><digits>" like '10.0.0.200102'
+                if len(parts) == 2:
+                    m = re.match(r"^(?P<ip>\d{1,3}(?:\.\d{1,3}){3})(?P<flen>\d+)$", parts[1])
+                    if m:
+                        parts = [parts[0], m.group('ip'), m.group('flen')]
+                        heuristic_used = True
+
+                # More general fallback: extract IPs and final integer from the raw line
+                if not heuristic_used:
+                    ips = IP_RE.findall(raw)
+                    nums = re.findall(r"(\d+)", raw)
+                    if len(ips) >= 2 and len(nums) >= 1:
+                        # take first two IPs and the last number as frame length
+                        parts = [ips[0], ips[1], nums[-1]]
+                        heuristic_used = True
+
+                if heuristic_used and DEBUG and total_lines <= 20:
+                    print(f"[{datetime.now().isoformat()}] Heuristic applied to line {total_lines}: parts={parts}", flush=True)
 
             if len(parts) < 3:
                 skipped_lines += 1
