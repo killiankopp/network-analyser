@@ -3,6 +3,7 @@ from time import sleep
 from collections import defaultdict
 from prometheus_client import start_http_server, Gauge
 from datetime import datetime
+import re
 
 INTERFACE = "enp2s0"
 IPS = ["10.0.0.39", "10.0.0.170"]
@@ -43,32 +44,65 @@ def capture_traffic():
     parsed_lines = 0
     skipped_lines = 0
     invalid_flen = 0
+    raw_preview = []
 
-    for line in proc.stdout:
-        total_lines += 1
-        parts = line.strip().split("\t")
+    try:
+        for line in proc.stdout:
+            total_lines += 1
+            raw = line.rstrip('\n')
+            if len(raw_preview) < 10:
+                raw_preview.append(raw)
 
-        if len(parts) < 3:
-            skipped_lines += 1
-            if DEBUG and total_lines <= 5:
-                # show the first few skipped lines to help debugging
-                print(f"[{datetime.now().isoformat()}] Skipped line (too few fields): '{line.strip()}'", flush=True)
-            continue
-        src, dst, flen = parts[0], parts[1], parts[2]
+            # Normalize: if tshark emitted backslashes as separators, convert them to tabs
+            normalized = raw.replace('\\', '\t')
+            if DEBUG and '\\' in raw and total_lines <= 20:
+                print(f"[{datetime.now().isoformat()}] Replaced backslashes in line {total_lines}: '{raw}' -> '{normalized}'", flush=True)
 
-        if not flen.isdigit():
-            invalid_flen += 1
-            if DEBUG and invalid_flen <= 5:
-                print(f"[{datetime.now().isoformat()}] Invalid frame.len: '{flen}' from line: '{line.strip()}'", flush=True)
-            continue
-        length = int(flen)
-        parsed_lines += 1
+            # First try split on tabs (normalized), otherwise split on whitespace
+            parts = normalized.split('\t')
+            if len(parts) < 3:
+                parts = [p for p in re.split(r"[\t\s]+", normalized) if p]
 
-        if src in IPS:
-            totals[src] += length
+            if len(parts) < 3:
+                skipped_lines += 1
+                if DEBUG and total_lines <= 20:
+                    print(f"[{datetime.now().isoformat()}] Skipped line (too few fields): '{raw}'", flush=True)
+                continue
 
-        if dst in IPS:
-            totals[dst] += length
+            src, dst, flen = parts[0], parts[1], parts[2]
+
+            # frame.len may include non-digit chars; extract the first integer-looking token
+            if not flen.isdigit():
+                m = re.search(r"(\d+)", flen)
+                if m:
+                    flen = m.group(1)
+
+            if not flen.isdigit():
+                invalid_flen += 1
+                if DEBUG and invalid_flen <= 10:
+                    print(f"[{datetime.now().isoformat()}] Invalid frame.len: '{flen}' from line: '{raw}'", flush=True)
+                continue
+
+            length = int(flen)
+            parsed_lines += 1
+
+            if src in IPS:
+                totals[src] += length
+
+            if dst in IPS:
+                totals[dst] += length
+
+    except KeyboardInterrupt:
+        # User interrupted; ensure tshark is terminated cleanly
+        if DEBUG:
+            print(f"[{datetime.now().isoformat()}] KeyboardInterrupt received, terminating tshark...", flush=True)
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+        # propagate to allow program to exit
+        raise
 
     proc.wait()
     stderr = proc.stderr.read()
@@ -77,6 +111,9 @@ def capture_traffic():
 
     # summary logs
     if DEBUG:
+        print(f"[{datetime.now().isoformat()}] Capture raw preview (first {len(raw_preview)} lines):", flush=True)
+        for r in raw_preview:
+            print(f"  {r}", flush=True)
         print(f"[{datetime.now().isoformat()}] Capture summary: total_lines={total_lines}, parsed_lines={parsed_lines}, skipped_lines={skipped_lines}, invalid_flen={invalid_flen}", flush=True)
         for ip in IPS:
             print(f"[{datetime.now().isoformat()}] Total bytes for {ip}: {totals.get(ip, 0)}", flush=True)
