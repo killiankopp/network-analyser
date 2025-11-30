@@ -1,18 +1,21 @@
 import subprocess
 from time import sleep
+from collections import defaultdict
 from prometheus_client import start_http_server, Gauge
 
 INTERFACE = "enp2s0"
-XBOX_IP = "10.0.0.170"
+IPS = ["10.0.0.39", "10.0.0.170"]
 DURATION = 30
+SLEEP_BETWEEN_ROUNDS = 270
 
-xbox_ewen_bytes = Gauge("xbox_bytes_last_minute", "Xbox network usage over last minute")
+network_bytes = Gauge("bytes_last_minute", "Network usage over last minute", ["ip"])
 
 def capture_traffic():
+    capture_filter = " or ".join(f"host {ip}" for ip in IPS)
     cmd = [
         "tshark",
         "-i", INTERFACE,
-        "-f", f"host {XBOX_IP}",
+        "-f", capture_filter,
         "-a", f"duration:{DURATION}",
         "-T", "fields",
         "-e", "frame.len"
@@ -20,23 +23,35 @@ def capture_traffic():
 
     print(f"Starting capture for {DURATION} seconds...")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-    total_bytes = 0
+    totals = defaultdict(int)
 
     for line in proc.stdout:
-        line = line.strip()
-        if line.isdigit():
-            total_bytes += int(line)
+        parts = line.strip().split("\t")
+
+        if len(parts) < 3:
+            continue
+        src, dst, flen = parts[0], parts[1], parts[2]
+
+        if not flen.isdigit():
+            continue
+        length = int(flen)
+
+        if src in IPS:
+            totals[src] += length
+
+        if dst in IPS:
+            totals[dst] += length
 
     proc.wait()
-    return total_bytes
+    return totals
 
 if __name__ == "__main__":
     print("Starting Prometheus exporter on port 9108…")
     start_http_server(9108)
 
     while True:
-        bytes_period = capture_traffic()
-        xbox_ewen_bytes.set(bytes_period)
-        print(f"{bytes_period} bytes in last {DURATION} seconds for {XBOX_IP}")
-        sleep(270)
+        totals = capture_traffic()
+        for ip in IPS:
+            network_bytes.labels(ip=ip).set(totals.get(ip, 0))
+            print(f"{ip}: {totals.get(ip, 0)} bytes")
+        sleep(SLEEP_BETWEEN_ROUNDS)
