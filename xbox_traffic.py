@@ -1,7 +1,7 @@
 import subprocess
 
 INTERFACE = "enp2s0"
-XBOX_IP = "10.0.0.39"
+XBOX_IP = "10.0.0.170"
 DURATION = 10
 
 def capture_traffic():
