@@ -1,19 +1,20 @@
 import subprocess
 
-XBOX_IP = "10.0.0.39"
 INTERFACE = "enp2s0"
+XBOX_IP = "10.0.0.39"
+DURATION = 10
 
 def capture_traffic():
     cmd = [
         "tshark",
         "-i", INTERFACE,
         "-f", f"host {XBOX_IP}",
-        "-a", "duration:60",
+        "-a", f"duration:{DURATION}",
         "-T", "fields",
         "-e", "frame.len"
     ]
 
-    print("Starting capture for 60 seconds...")
+    print(f"Starting capture for {DURATION} seconds...")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     total_bytes = 0
@@ -27,5 +28,5 @@ def capture_traffic():
     return total_bytes
 
 if __name__ == "__main__":
-    bytes_1min = capture_traffic()
-    print(f"{bytes_1min} bytes in last 1 minute")
+    bytes_period = capture_traffic()
+    print(f"{bytes_period} bytes in last {DURATION} seconds")
