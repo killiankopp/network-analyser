@@ -1,8 +1,12 @@
 import subprocess
+from time import sleep
+from prometheus_client import start_http_server, Gauge
 
 INTERFACE = "enp2s0"
 XBOX_IP = "10.0.0.170"
-DURATION = 10
+DURATION = 30
+
+xbox_ewen_bytes = Gauge("xbox_bytes_last_minute", "Xbox network usage over last minute")
 
 def capture_traffic():
     cmd = [
@@ -28,5 +32,11 @@ def capture_traffic():
     return total_bytes
 
 if __name__ == "__main__":
-    bytes_period = capture_traffic()
-    print(f"{bytes_period} bytes in last {DURATION} seconds for {XBOX_IP}")
+    print("Starting Prometheus exporter on port 9108…")
+    start_http_server(9108)
+
+    while True:
+        bytes_period = capture_traffic()
+        xbox_ewen_bytes.set(bytes_period)
+        print(f"{bytes_period} bytes in last {DURATION} seconds for {XBOX_IP}")
+        sleep(270)
