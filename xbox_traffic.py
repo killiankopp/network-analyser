@@ -4,6 +4,8 @@ from collections import defaultdict
 from prometheus_client import start_http_server, Gauge
 from datetime import datetime
 import re
+import tempfile
+import os
 
 INTERFACE = "enp2s0"
 IPS = ["10.0.0.39", "10.0.0.170"]
@@ -14,6 +16,98 @@ DEBUG = True
 network_bytes = Gauge("bytes_last_minute", "Network usage over last minute", ["ip"])
 
 IP_RE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
+
+
+def _parse_tshark_fields_output(output):
+    totals = defaultdict(int)
+    parsed = 0
+    for i, line in enumerate(output.splitlines(), start=1):
+        parts = line.strip().split("\t")
+        if len(parts) < 3:
+            if DEBUG and i <= 5:
+                print(f"[{datetime.now().isoformat()}] fallback: skipped malformed line: '{line}'", flush=True)
+            continue
+        src, dst, flen = parts[0], parts[1], parts[2]
+        if not flen.isdigit():
+            m = re.search(r"(\d+)", flen)
+            if m:
+                flen = m.group(1)
+        if not flen.isdigit():
+            continue
+        length = int(flen)
+        parsed += 1
+        if src in IPS:
+            totals[src] += length
+        if dst in IPS:
+            totals[dst] += length
+    return totals, parsed
+
+
+def _pcap_fallback(capture_filter):
+    # write to temp pcap using tshark -w, then read back with tshark -r to get consistent field output
+    fd, pcap_path = tempfile.mkstemp(prefix="na_capture_", suffix=".pcap")
+    os.close(fd)
+    cmd_write = [
+        "tshark",
+        "-i", INTERFACE,
+        "-f", capture_filter,
+        "-a", f"duration:{DURATION}",
+        "-w", pcap_path,
+        "-n",
+    ]
+    if DEBUG:
+        print(f"[{datetime.now().isoformat()}] Fallback: writing pcap to {pcap_path} using: {' '.join(cmd_write)}", flush=True)
+    try:
+        r = subprocess.run(cmd_write, capture_output=True, text=True)
+    except FileNotFoundError:
+        print("tshark not found for fallback: install tshark.", flush=True)
+        return defaultdict(int), 0
+    if r.returncode != 0:
+        print(f"Fallback capture failed (code {r.returncode}): {r.stderr}", flush=True)
+        try:
+            os.remove(pcap_path)
+        except Exception:
+            pass
+        return defaultdict(int), 0
+
+    # now read pcap and parse fields
+    cmd_read = [
+        "tshark",
+        "-r", pcap_path,
+        "-T", "fields",
+        "-e", "ip.src",
+        "-e", "ip.dst",
+        "-e", "frame.len",
+        "-E", "separator=\t",
+        "-n",
+    ]
+    if DEBUG:
+        print(f"[{datetime.now().isoformat()}] Fallback: reading pcap with: {' '.join(cmd_read)}", flush=True)
+    try:
+        r2 = subprocess.run(cmd_read, capture_output=True, text=True)
+    except FileNotFoundError:
+        print("tshark not found for fallback read: install tshark.", flush=True)
+        try:
+            os.remove(pcap_path)
+        except Exception:
+            pass
+        return defaultdict(int), 0
+
+    if r2.returncode != 0:
+        print(f"Fallback read failed (code {r2.returncode}): {r2.stderr}", flush=True)
+        try:
+            os.remove(pcap_path)
+        except Exception:
+            pass
+        return defaultdict(int), 0
+
+    totals, parsed = _parse_tshark_fields_output(r2.stdout)
+    try:
+        os.remove(pcap_path)
+    except Exception:
+        pass
+    return totals, parsed
+
 
 def capture_traffic():
     capture_filter = " or ".join(f"host {ip}" for ip in IPS)
@@ -128,6 +222,19 @@ def capture_traffic():
     if proc.returncode != 0:
         print(f"tshark exited with code {proc.returncode}; stderr:\n{stderr}", flush=True)
 
+    # if nothing parsed but we saw lines, try pcap fallback
+    if parsed_lines == 0 and total_lines > 0:
+        if DEBUG:
+            print(f"[{datetime.now().isoformat()}] No lines parsed from live output (total_lines={total_lines}), trying pcap fallback...", flush=True)
+        fb_totals, fb_parsed = _pcap_fallback(capture_filter)
+        if fb_parsed > 0:
+            if DEBUG:
+                print(f"[{datetime.now().isoformat()}] Fallback parsed {fb_parsed} lines; using fallback totals.", flush=True)
+            return fb_totals
+        else:
+            if DEBUG:
+                print(f"[{datetime.now().isoformat()}] Fallback did not parse any lines.", flush=True)
+
     # summary logs
     if DEBUG:
         print(f"[{datetime.now().isoformat()}] Capture raw preview (first {len(raw_preview)} lines):", flush=True)
@@ -138,6 +245,7 @@ def capture_traffic():
             print(f"[{datetime.now().isoformat()}] Total bytes for {ip}: {totals.get(ip, 0)}", flush=True)
 
     return totals
+
 
 if __name__ == "__main__":
     print("Starting Prometheus exporter on port 9108…", flush=True)
