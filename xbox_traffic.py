@@ -29,4 +29,4 @@ def capture_traffic():
 
 if __name__ == "__main__":
     bytes_period = capture_traffic()
-    print(f"{bytes_period} bytes in last {DURATION} seconds")
+    print(f"{bytes_period} bytes in last {DURATION} seconds for {XBOX_IP}")
