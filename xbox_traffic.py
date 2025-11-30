@@ -18,7 +18,12 @@ def capture_traffic():
         "-f", capture_filter,
         "-a", f"duration:{DURATION}",
         "-T", "fields",
-        "-e", "frame.len"
+        "-e", "ip.src",
+        "-e", "ip.dst",
+        "-e", "frame.len",
+        "-E", "separator=\\t",
+        "-l",  # line buffered stdout
+        "-n",  # no name resolution
     ]
 
     print(f"Starting capture for {DURATION} seconds...")
@@ -43,6 +48,9 @@ def capture_traffic():
             totals[dst] += length
 
     proc.wait()
+    stderr = proc.stderr.read()
+    if proc.returncode != 0:
+        print(f"tshark exited with code {proc.returncode}; stderr:\n{stderr}")
     return totals
 
 if __name__ == "__main__":
