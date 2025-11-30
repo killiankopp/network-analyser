@@ -1,45 +1,31 @@
-#!/usr/bin/env python3
 import subprocess
-import time
-import csv
-from datetime import datetime
 
-INTERFACE = "enp2s0"
 XBOX_IP = "10.0.0.39"
-DURATION = 60 # seconds
+INTERFACE = "enp2s0"
 
 def capture_traffic():
     cmd = [
         "tshark",
         "-i", INTERFACE,
         "-f", f"host {XBOX_IP}",
+        "-a", "duration:60",
         "-T", "fields",
         "-e", "frame.len"
     ]
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    print("Starting capture for 60 seconds...")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    start = time.time()
     total_bytes = 0
 
-    while time.time() - start < DURATION:
-        line = proc.stdout.readline()
-        if not line:
-            continue
-        try:
-            total_bytes += int(line.strip())
-        except ValueError:
-            pass
+    for line in proc.stdout:
+        line = line.strip()
+        if line.isdigit():
+            total_bytes += int(line)
 
-    proc.terminate()
+    proc.wait()
     return total_bytes
-
-def save_to_csv(total_bytes):
-    with open("xbox_traffic.csv", "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([datetime.now().isoformat(), total_bytes])
 
 if __name__ == "__main__":
     bytes_1min = capture_traffic()
-    save_to_csv(bytes_1min)
     print(f"{bytes_1min} bytes in last 1 minute")
